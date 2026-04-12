@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
+    'storages',
     "catalog.apps.CatalogConfig",
     "orders.apps.OrdersConfig",
 ]
@@ -178,6 +179,16 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+# Storage defaults
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
 # Cloudflare R2 / S3 Storage
 AWS_ACCESS_KEY_ID = os.getenv('CLOUDFLARE_R2_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = os.getenv('CLOUDFLARE_R2_SECRET_ACCESS_KEY')
@@ -186,14 +197,22 @@ AWS_S3_ENDPOINT_URL = os.getenv('CLOUDFLARE_R2_ENDPOINT_URL')
 AWS_S3_REGION_NAME = os.getenv('CLOUDFLARE_R2_REGION_NAME', 'auto')
 AWS_S3_CUSTOM_DOMAIN = os.getenv('CLOUDFLARE_R2_PUBLIC_DOMAIN')
 
-# Use S3 for media if credentials are provided, otherwise use local
+# Use R2 for media if credentials are provided, otherwise keep local storage.
 if all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_STORAGE_BUCKET_NAME, AWS_S3_ENDPOINT_URL]):
-    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     AWS_S3_SIGNATURE_VERSION = 's3v4'
     AWS_S3_FILE_OVERWRITE = False
-    AWS_DEFAULT_ACL = None # R2 doesn't support S3 ACLs well
-    AWS_QUERYSTRING_AUTH = False # Set to True if you want private files
-    
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = False
+    AWS_S3_ADDRESSING_STYLE = 'path'
+    AWS_S3_VERIFY = True
+    AWS_S3_OBJECT_PARAMETERS = {
+        'CacheControl': 'public, max-age=31536000',
+    }
+
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+    }
+
     if AWS_S3_CUSTOM_DOMAIN:
         MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
 
