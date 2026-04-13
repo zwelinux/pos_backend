@@ -217,7 +217,9 @@ class Order(models.Model):
         if self.status in ("paid", "void"):
             return
         self.status = "tab"
-        self.payment_method = "tab"
+        # A tab is an order state, not a real payment method.
+        # Keep unpaid tabs as pending until they are settled.
+        self.payment_method = "pending"
         if customer_name:
             self.customer_name = customer_name
         if remark:
@@ -468,6 +470,19 @@ class CashSession(AuditMixin, models.Model):
         end = self.closed_at or timezone.now()
         return (start, end)
 
+    def _reporting_day_window(self):
+        """
+        Classify "tab today" vs "previous tabs" relative to the reporting day:
+        - open session: today in store timezone
+        - closed session: the day the session was closed
+        Always intersect with the session window so old sessions don't pick up future data.
+        """
+        ref = self.closed_at or timezone.now()
+        day = timezone.localdate(ref)
+        start = timezone.make_aware(datetime.combine(day, time.min))
+        end = timezone.make_aware(datetime.combine(day, time.max))
+        return start, end
+
     def _cash_paid_orders_qs(self):
         start, end = self._time_window()
         return Order.objects.filter(
@@ -497,38 +512,51 @@ class CashSession(AuditMixin, models.Model):
 
     def sales_tab_today(self):
         """
-        Tabs opened today (unpaid) + tabs opened today but paid today.
+        Tabs opened on the reporting day within this session window.
+        This is a tracking metric, not drawer cash.
         """
-        today = timezone.localdate()
-        start = timezone.make_aware(datetime.combine(today, time.min))
-        end = timezone.make_aware(datetime.combine(today, time.max))
+        day_start, day_end = self._reporting_day_window()
+        session_start, session_end = self._time_window()
 
         s = Order.objects.filter(
-            tab_opened_at__gte=start,
-            tab_opened_at__lte=end,
-            status__in=["tab", "paid"],   # 🔥 include paid tabs opened today
+            tab_opened_at__gte=max(day_start, session_start),
+            tab_opened_at__lte=min(day_end, session_end),
+            status__in=["tab", "paid"],
         ).aggregate(s=Sum("total"))["s"]
 
         return s or Decimal("0.00")
 
-
-    def sales_tab_previous(self):
+    def cash_from_tabs_opened_today(self):
         """
-        Tabs opened before today but paid during this session.
-        Timezone-safe.
+        Cash actually collected during this session for tabs opened on the reporting day.
         """
-        start, end = self._time_window()
-        session_day = timezone.localdate(self.opened_at)
-
-        # Convert session's opened_at date into aware day range
-        day_start = timezone.make_aware(datetime.combine(session_day, time.min))
+        day_start, day_end = self._reporting_day_window()
+        session_start, session_end = self._time_window()
 
         s = Order.objects.filter(
             status="paid",
             payment_method="cash",
-            tab_opened_at__lt=day_start,   # opened before this session day
-            paid_at__gte=start,
-            paid_at__lte=end,
+            tab_opened_at__gte=max(day_start, session_start),
+            tab_opened_at__lte=min(day_end, session_end),
+            paid_at__gte=session_start,
+            paid_at__lte=session_end,
+        ).aggregate(s=Sum("total"))["s"]
+
+        return s or Decimal("0.00")
+
+    def sales_tab_previous(self):
+        """
+        Cash collected during this session for tabs opened before the reporting day.
+        """
+        session_start, session_end = self._time_window()
+        day_start, _ = self._reporting_day_window()
+
+        s = Order.objects.filter(
+            status="paid",
+            payment_method="cash",
+            tab_opened_at__lt=day_start,
+            paid_at__gte=session_start,
+            paid_at__lte=session_end,
         ).aggregate(s=Sum("total"))["s"]
 
         return s or Decimal("0.00")
@@ -567,7 +595,7 @@ class CashSession(AuditMixin, models.Model):
         return (
             (self.starting_balance or Decimal("0.00"))
             + self.sales_actual()
-            + self.sales_tab_today()
+            + self.cash_from_tabs_opened_today()
             + self.sales_tab_previous()
             - self.expenses_sum()
             - withdraw_sum

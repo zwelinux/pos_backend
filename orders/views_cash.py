@@ -419,6 +419,17 @@ def cash_daily_report(request):
         or Decimal("0.00")
     )
 
+    sales_money_tab_today_paid = (
+        Order.objects.filter(
+            tab_opened_at__date=day,
+            status="paid",
+            payment_method="cash",
+            paid_at__gte=start,
+            paid_at__lte=end,
+        ).aggregate(s=Sum("total"))["s"]
+        or Decimal("0.00")
+    )
+
 
 
     # sales_money_from_previous_tab = (
@@ -449,7 +460,7 @@ def cash_daily_report(request):
     total_money = (
         starting_balance
         + sales_money_actual
-        + sales_money_tab_today
+        + sales_money_tab_today_paid
         + sales_money_from_previous_tab
         - expense_money
         - withdraw_money
