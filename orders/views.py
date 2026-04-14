@@ -881,13 +881,39 @@ class OrderViewSet(mixins.CreateModelMixin,
         qs = Order.objects.all().order_by("-id")
 
         if self.action == "list":
+            status_value = (self.request.query_params.get("status") or "").strip()
             q = (self.request.query_params.get("q") or "").strip()
+            created_from = (self.request.query_params.get("created_from") or "").strip()
+            created_to = (self.request.query_params.get("created_to") or "").strip()
+            paid_from = (self.request.query_params.get("paid_from") or "").strip()
+            paid_to = (self.request.query_params.get("paid_to") or "").strip()
+
             if q:
                 qs = qs.filter(
                     Q(number__icontains=q) |
                     Q(customer_name__icontains=q) |
                     Q(table__name__icontains=q)
                 )
+
+            if status_value:
+                qs = qs.filter(status=status_value)
+
+            if created_from:
+                created_from_start, _ = local_day_window_utc(created_from)
+                qs = qs.filter(created_at__gte=created_from_start)
+
+            if created_to:
+                _, created_to_end = local_day_window_utc(created_to)
+                qs = qs.filter(created_at__lt=created_to_end)
+
+            if paid_from:
+                paid_from_start, _ = local_day_window_utc(paid_from)
+                qs = qs.filter(paid_at__gte=paid_from_start)
+
+            if paid_to:
+                _, paid_to_end = local_day_window_utc(paid_to)
+                qs = qs.filter(paid_at__lt=paid_to_end)
+
         return qs
 
 
