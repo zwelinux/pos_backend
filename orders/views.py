@@ -309,35 +309,54 @@ class OrderViewSet(mixins.CreateModelMixin,
     @action(detail=True, methods=["patch"])
     def attach_table(self, request, pk=None):
         order = self.get_object()
+        if order.status in ("paid", "void") or order.paid_at:
+            return Response({"detail": "Only active orders can switch tables."}, status=400)
 
         new_tid = request.data.get("table_id", None)
         if new_tid == "":
             new_tid = None
 
         with transaction.atomic():
-            # 1) Free previous table if needed
-            prev = order.table
-            if prev and prev.name.lower() != "takeaway" and prev.status != "free":
-                Table.objects.select_for_update().filter(pk=prev.pk).update(status="free")
+            prev = None
+            if order.table_id:
+                prev = Table.objects.select_for_update().filter(pk=order.table_id).first()
 
-            # 2) Assign new table (or detach)
-            if new_tid is None:
-                order.table = None
-            else:
+            next_table = None
+            if new_tid is not None:
                 try:
-                    t = Table.objects.select_for_update().get(pk=new_tid)
+                    next_table = Table.objects.select_for_update().get(pk=new_tid)
                 except Table.DoesNotExist:
                     return Response({"detail": "Invalid table_id"}, status=400)
 
-                if t.status == "closed":
+                if next_table.status == "closed":
                     return Response({"detail": "Table is closed"}, status=400)
 
-                order.table = t
-                if t.name.lower() != "takeaway" and t.status != "occupied":
-                    t.status = "occupied"
-                    t.save(update_fields=["status"])
+                has_other_active_order = Order.objects.select_for_update().filter(
+                    table=next_table,
+                    status__in=["open", "tab"],
+                ).exclude(pk=order.pk).exists()
+                if has_other_active_order:
+                    return Response(
+                        {"detail": "Destination table already has an active order."},
+                        status=400,
+                    )
 
-            order.save(update_fields=["table"])
+            order.table = next_table
+            order.table_name_snapshot = next_table.name if next_table else ""
+            order.save(update_fields=["table", "table_name_snapshot"])
+
+            if next_table and next_table.name.lower() != "takeaway" and next_table.status != "occupied":
+                next_table.status = "occupied"
+                next_table.save(update_fields=["status"])
+
+            if prev and prev.pk != getattr(next_table, "pk", None) and prev.name.lower() != "takeaway":
+                prev_has_other_active_orders = Order.objects.select_for_update().filter(
+                    table=prev,
+                    status__in=["open", "tab"],
+                ).exclude(pk=order.pk).exists()
+                if not prev_has_other_active_orders and prev.status != "free":
+                    prev.status = "free"
+                    prev.save(update_fields=["status"])
 
         # 3) Broadcast table badge update
         table_name = order.table.name if order.table else ""
@@ -356,7 +375,8 @@ class OrderViewSet(mixins.CreateModelMixin,
         except Exception as e:
             print("Broadcast failed:", e)
 
-        return Response({"ok": True, "table": TableSer(order.table).data if order.table else None})
+        order.refresh_from_db()
+        return Response(OrderOutSer(order, context={"request": request}).data)
 
     def _broadcast_table_change(self, tickets, table_name):
         try:
@@ -1265,6 +1285,7 @@ class TableViewSet(mixins.ListModelMixin,
         with transaction.atomic():
             order = Order.objects.create(
                 table=table,
+                table_name_snapshot=table.name,
                 status="open",
                 subtotal=Decimal("0.00"),
                 tax=Decimal("0.00"),

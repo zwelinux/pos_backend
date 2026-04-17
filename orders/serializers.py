@@ -116,6 +116,7 @@ class OrderCreateSer(serializers.Serializer):
             except Table.DoesNotExist:
                 raise ValidationError({"table_id": "Invalid table."})
             order.table = table_obj
+            order.table_name_snapshot = table_obj.name
             if table_obj.name.lower() != "takeaway" and table_obj.status != "occupied":
                 table_obj.status = "occupied"
                 table_obj.save(update_fields=["status"])
@@ -282,7 +283,7 @@ class OrderCreateSer(serializers.Serializer):
             order.paid_at = now()
             order.status = "paid"
 
-        order.save(update_fields=["table", "subtotal", "tax", "total", "paid_at", "status"])
+        order.save(update_fields=["table", "table_name_snapshot", "subtotal", "tax", "total", "paid_at", "status"])
 
         # free table immediately if dine-in and pay_now
         if pay_now and order.table and order.table.name.lower() != "takeaway":
@@ -540,13 +541,19 @@ class KitchenTicketOutSer(serializers.ModelSerializer):
     qty = serializers.SerializerMethodField()
 
     modifiers = OrderItemModifierOutSer(source="item.modifiers", many=True, read_only=True)
-    table_name = serializers.CharField(source="order.table.name", read_only=True)
+    table_name = serializers.SerializerMethodField()
     # timers for KDS
     started_at = serializers.DateTimeField(read_only=True)
     done_at = serializers.DateTimeField(read_only=True)
 
     def get_qty(self, obj):
         return 1
+
+    def get_table_name(self, obj):
+        order = getattr(obj, "order", None)
+        if not order:
+            return ""
+        return getattr(getattr(order, "table", None), "name", None) or getattr(order, "table_name_snapshot", "") or ""
 
     class Meta:
         model = KitchenTicket

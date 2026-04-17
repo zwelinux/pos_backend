@@ -4,7 +4,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 from django.contrib.auth.models import User
 from catalog.models import Category, Product, ModifierGroup, ModifierOption, ProductModifierGroup
-from orders.models import Order, OrderItem, OrderItemModifier
+from orders.models import Order, OrderItem, OrderItemModifier, Table
 
 class OrderAPITestCase(APITestCase):
     def setUp(self):
@@ -103,3 +103,44 @@ class OrderAPITestCase(APITestCase):
         order.refresh_from_db()
         self.assertEqual(order.items.count(), 1)
         self.assertEqual(order.items.first().qty, 2)
+
+    def test_attach_table_moves_order_and_updates_table_states(self):
+        source = Table.objects.create(name="T1", status="occupied")
+        dest = Table.objects.create(name="T2", status="free")
+        order = Order.objects.create(table=source, table_name_snapshot=source.name, status="open")
+
+        url = reverse("order-attach-table", kwargs={"pk": order.id})
+        response = self.client.patch(url, {"table_id": dest.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        order.refresh_from_db()
+        source.refresh_from_db()
+        dest.refresh_from_db()
+
+        self.assertEqual(order.table_id, dest.id)
+        self.assertEqual(order.table_name_snapshot, dest.name)
+        self.assertEqual(source.status, "free")
+        self.assertEqual(dest.status, "occupied")
+        self.assertEqual(response.data["table"]["id"], dest.id)
+        self.assertEqual(response.data["table_display"], dest.name)
+
+    def test_attach_table_rejects_destination_with_active_order(self):
+        source = Table.objects.create(name="T3", status="occupied")
+        dest = Table.objects.create(name="T4", status="occupied")
+        order = Order.objects.create(table=source, table_name_snapshot=source.name, status="open")
+        Order.objects.create(table=dest, table_name_snapshot=dest.name, status="open")
+
+        url = reverse("order-attach-table", kwargs={"pk": order.id})
+        response = self.client.patch(url, {"table_id": dest.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["detail"], "Destination table already has an active order.")
+
+        order.refresh_from_db()
+        source.refresh_from_db()
+        dest.refresh_from_db()
+
+        self.assertEqual(order.table_id, source.id)
+        self.assertEqual(source.status, "occupied")
+        self.assertEqual(dest.status, "occupied")
