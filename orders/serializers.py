@@ -532,6 +532,7 @@ class OrderOutSer(serializers.ModelSerializer):
 
 
 class KitchenTicketOutSer(serializers.ModelSerializer):
+    order_id = serializers.IntegerField(source="order.id", read_only=True)
     order_number = serializers.CharField(source="order.number", read_only=True)
     # 🔒 snapshots for display stability
     product_name = serializers.CharField(source="item.product_name_snapshot", read_only=True)
@@ -559,6 +560,7 @@ class KitchenTicketOutSer(serializers.ModelSerializer):
         model = KitchenTicket
         fields = (
             "id",
+            "order_id",
             "order_number",
             "station",
             "status",
