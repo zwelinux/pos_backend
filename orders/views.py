@@ -205,7 +205,7 @@ class OrderViewSet(mixins.CreateModelMixin,
     def get_permissions(self):
         if self.action == "retrieve":
             return [AllowAny()]
-        if self.action in ("create", "attach_table", "add_items", "settle"):
+        if self.action in ("create", "attach_table", "add_items", "settle", "change_payment_method"):
             return [IsAuthenticated(), InGroups("Cashier", "Manager")()]
         if self.action == "void":
             return [IsAuthenticated(), InGroups("Cashier", "Manager")()]
@@ -713,6 +713,31 @@ class OrderViewSet(mixins.CreateModelMixin,
                     updates.append("tab_closed_by")
             if updates:
                 order.save(update_fields=updates)
+
+        order.refresh_from_db()
+        return Response(OrderOutSer(order, context={"request": request}).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="change-payment-method")
+    def change_payment_method(self, request, pk=None):
+        payment_method = (request.data.get("payment_method") or "").strip().lower()
+        allowed_methods = {choice[0] for choice in Order.PAYMENT_METHODS if choice[0] != "pending"}
+
+        if payment_method not in allowed_methods:
+            return Response({"detail": "Invalid payment method."}, status=400)
+
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(pk=pk)
+
+            if order.status == "void":
+                return Response({"detail": "Voided orders cannot change payment method."}, status=400)
+            if not order.paid_at:
+                return Response({"detail": "Only settled orders can change payment method."}, status=400)
+
+            if order.payment_method == payment_method:
+                return Response(OrderOutSer(order, context={"request": request}).data)
+
+            order.payment_method = payment_method
+            order.save(update_fields=["payment_method"])
 
         order.refresh_from_db()
         return Response(OrderOutSer(order, context={"request": request}).data, status=status.HTTP_200_OK)
